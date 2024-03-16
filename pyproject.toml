@@ -1,0 +1,21 @@
+[project]
+name = "logrepl"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "David Vincelli",email = "david.vincelli@gmail.com"},
+]
+dependencies = [
+    "psycopg2",
+]
+requires-python = "==3.12.*"
+readme = "README.md"
+license = {text = "BSD"}
+
+[tool.pdm]
+distribution = false
+
+[tool.pdm.dev-dependencies]
+lint = ["ruff" ]
+test = ["pytest", "pytest-cov"]
+doc = ["mkdocs"]
