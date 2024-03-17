@@ -5,15 +5,19 @@ import argparse
 import configparser
 import io
 import contextlib
+from loguru import logger
 
 
 def run_subprocess(command, env=None):
+    logger.debug(f"Running command: {command}")
     subprocess.run(command, shell=True, check=True, env=env)
 
 
 @contextlib.contextmanager
 def connect_db(db, user, password, host, port):
+    logger.debug(f"Connecting to database {db} on {host}:{port} as {user}")
     with psycopg.connect(dbname=db, user=user, host=host, port=port, password=password, sslmode="require") as cxn:
+        logger.debug(f"Connected to database {db} on {host}:{port} as {user}")
         yield cxn
 
 
@@ -36,7 +40,7 @@ def target_db(config, dbname=None):
 
 
 def execute_sql(conn, query, args=None):
-    print(query, args)
+    logger.debug(f"Executing query: {query} with args: {args}")
     args = args or []
     with conn.cursor() as cur:
         cur.execute(query, args)
@@ -44,6 +48,8 @@ def execute_sql(conn, query, args=None):
 
 
 def dump_schema(config, file="/tmp/schema.sql"):
+    logger.debug(f"Dumping schema to {file}")
+
     dbname = config["source"]["dbname"]
     user = config["source"]["username"]
     password = config["source"]["password"]
@@ -57,6 +63,8 @@ def dump_schema(config, file="/tmp/schema.sql"):
 
 
 def restore_schema(config, file="/tmp/schema.sql"):
+    logger.debug(f"Restoring schema from {file}")
+
     create_database(config)
 
     dbname = config["target"]["dbname"]
@@ -71,6 +79,7 @@ def restore_schema(config, file="/tmp/schema.sql"):
 
 
 def create_pglogical_extension(conn):
+    logger.debug("Creating pglogical extension")
     execute_sql(conn, "CREATE EXTENSION IF NOT EXISTS pglogical")
 
 
@@ -92,6 +101,7 @@ def create_node(conn, node, dsn):
         sql.SQL("SELECT pglogical.create_node(node_name := %s, dsn := %s)"),
         [node, dsn],
     )
+    logger.info(f"Node {node} created")
 
 
 def create_replication_set(conn, set_name):
@@ -100,6 +110,7 @@ def create_replication_set(conn, set_name):
         sql.SQL("SELECT pglogical.create_replication_set(set_name := %s)"),
         [set_name],
     )
+    logger.info(f"Replication set {set_name} created")
 
 
 def add_all_tables_to_replication_set(conn, set_name):
@@ -120,7 +131,7 @@ def create_subscription(conn, subscription, dsn, set_name):
     )
 
 
-def stop_subscription(conn, subscription):
+def drop_subscription(conn, subscription):
     execute_sql(
         conn,
         sql.SQL("SELECT pglogical.drop_subscription(subscription_name := %s)"),
@@ -216,21 +227,15 @@ def create_database(config):
             )
 
 
-def start(config):
-    with target_db(config) as conn:
-        start_subscription(conn, config["target"]["subscription"])
-        subscription_status(conn, config["target"]["subscription"])
-
-
 def stop(config):
     with target_db(config) as conn:
-        stop_subscription(conn, config["target"]["subscription"])
+        drop_subscription(conn, config["target"]["subscription"])
         subscription_status(conn, config["target"]["subscription"])
 
 
 def teardown(config):
     with target_db(config) as conn:
-        stop_subscription(conn, config["target"]["subscription"])
+        drop_subscription(conn, config["target"]["subscription"])
         subscription_status(conn, config["target"]["subscription"])
 
         execute_sql(
@@ -241,7 +246,9 @@ def teardown(config):
 
 
 def verify_config(config):
-    print("Verifying the configuration")
+    logger.info("Verifying the configuration")
+
+    verified = True
 
     with source_db(config) as conn:
         with conn.cursor() as cur:
@@ -249,7 +256,7 @@ def verify_config(config):
             result = cur.fetchone()
             if result != (1,):
                 raise SystemExit("Source database is not accessible")
-    print("Source database is accessible")
+    logger.info("Source database is accessible")
 
     with target_db(config, dbname="template1") as conn:
         with conn.cursor() as cur:
@@ -257,8 +264,90 @@ def verify_config(config):
             result = cur.fetchone()
             if result != (1,):
                 raise SystemExit("Target database is not accessible")
-    print("Target database is accessible")
+    logger.info("Target database is accessible")
 
+    # very the following settings on both source and target databases:
+    # wal_level = 'logical'
+    # shared_preload_libraries = 'pglogical'
+    # max_worker_processes = 10   # one per database needed on provider node
+                                  # one per node needed on subscriber node
+    logger.info("Verifying the source database settings:")
+    with source_db(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SHOW wal_level")
+            result = cur.fetchone()
+            wal_level = result[0]
+            logger.info(f"wal_level: {wal_level}")
+            if wal_level != "logical":
+                logger.error("wal_level is not set to 'logical' on source database")
+                verified = False
+
+            cur.execute("SHOW shared_preload_libraries")
+            result = cur.fetchone()
+            shared_preload_libraries = result[0].split(',')
+            logger.info(f"shared_preload_libraries: {','.join(shared_preload_libraries)}")
+            if 'pglogical' not in shared_preload_libraries:
+                logger.error("shared_preload_libraries does not include 'pglogical' on source database")
+                verified = False
+    
+            cur.execute("SHOW max_worker_processes")
+            result = cur.fetchone()
+            max_worker_processes = int(result[0])
+            logger.info("max_worker_processes: {max_worker_processes}")
+            if max_worker_processes < 10:
+                logger.error("max_worker_processes is less than 10 on source database")
+                verified = False
+
+            cur.execute("SHOW max_replication_slots")
+            result = cur.fetchone()
+            max_replication_slots = int(result[0])
+            logger.info("max_replication_slots: {max_replication_slots}")
+            if max_replication_slots < 10:
+                logger.error("max_replication_slots is less than 10 on source database")
+                verified = False
+
+            cur.execute("SHOW max_wal_senders")
+            result = cur.fetchone()
+            max_wal_senders = int(result[0])
+            logger.info("max_wal_senders: {max_wal_senders}")
+            if max_wal_senders < 10:
+                logger.error("max_wal_senders is less than 10 on source database")
+                verified = False
+
+    logger.info("Verifying the target database settings:")
+    with target_db(config) as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("SHOW wal_level")
+            result = cur.fetchone()
+            wal_level = result[0]
+            logger.info(f"wal_level: {wal_level}")
+            if wal_level != "logical":
+                logger.error("wal_level is not set to 'logical' on target database")
+                verified = False
+
+            cur.execute("SHOW shared_preload_libraries")
+            result = cur.fetchone()
+            shared_preload_libraries = result[0].split(',')
+            logger.info(f"shared_preload_libraries: {','.join(shared_preload_libraries)}")
+            if 'pglogical' not in shared_preload_libraries:
+                logger.error("shared_preload_libraries does not include 'pglogical' on target database")
+                verified = False
+
+            cur.execute("SHOW max_worker_processes")
+            result = cur.fetchone()
+            max_worker_processes = int(result[0])
+            logger.info("max_worker_processes: {max_worker_processes}")
+            if max_worker_processes < 10:
+                logger.error("max_worker_processes is less than 10 on target database")
+                raise SystemExit("max_worker_processes is less than 10 on target database")    
+
+    if verified:
+        logger.info("Configuration verification passed")
+    else:
+        logger.error("Configuration verification failed")
+
+    return verified
 
 def wait(config):
     with target_db(config) as conn:
@@ -304,7 +393,6 @@ def argparser():
     setup_subparsers.add_parser("replication_set", help="Create the replication set")
     setup_subparsers.add_parser("subscriber", help="Create the subscriber")
 
-    subparsers.add_parser("start", help="Start the replication")
     subparsers.add_parser(
         "status", help="Show the status of the replication"
     )
@@ -326,8 +414,6 @@ def setup_command(config, args):
             dump_schema(config, args.file)
         elif args.load:
             restore_schema(config, args.file)
-        else:
-            parser.print_help()
     elif args.setup_command == "node":
         create_provider_node(config)
     elif args.setup_command == "replication_set":
@@ -353,8 +439,6 @@ def main():
         status(config)
     elif args.command == "setup":
         setup_command(config, args)
-    elif args.command == "start":
-        start(config)
     elif args.command == "stop":
         stop(config)
     elif args.command == "teardown":
