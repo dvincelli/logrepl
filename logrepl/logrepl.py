@@ -156,34 +156,63 @@ def add_all_tables_to_replication_set(conn, set_name):
     logger.info(f"All tables added to replication set {set_name}")
 
 
+def add_all_sequences_to_replication_set(conn, set_name):
+    execute_sql(
+        conn,
+        sql.SQL("SELECT pglogical.replication_set_add_all_sequences(%s, ARRAY['public'])"),
+        [set_name],
+    )
+    logger.info(f"All sequences added to replication set {set_name}")
+
+
 def create_replication_user(conn, user, password):
-    user_ = sql.Identifier(user)
+    role = sql.Identifier(user)
 
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = {}").format(sql.Literal(user)))
+        cur.execute(
+            sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = {}").format(
+                sql.Literal(user)
+            )
+        )
         exists = cur.fetchone()
         if not exists:
-            execute_sql(
-                conn,
-                sql.SQL("CREATE ROLE {} WITH REPLICATION LOGIN PASSWORD {}").format(user_, sql.Literal(password)),
+            cur.execute(
+                sql.SQL("CREATE ROLE {} WITH REPLICATION LOGIN PASSWORD {}").format(
+                    role, sql.Literal(password)
+                ),
             )
             logger.info(f"Replication user {user} created")
 
         # TODO: GCP only, make this conditional
         # if cloudsqlsuperuser permission group exists, grant it:
         # cur.execute(sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = 'cloudsqlsuperuser'"))
-        # execute_sql(conn, sql.SQL("GRANT cloudsqlsuperuser TO {}").format(user_))
 
-    execute_sql(conn, sql.SQL("GRANT ALL ON SCHEMA pglogical TO {}").format(user_)),
-    execute_sql(conn, sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA pglogical TO {}").format(user_))
-    execute_sql(conn, sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA pglogical TO {}").format(user_))
-    execute_sql(conn, sql.SQL("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pglogical TO {}").format(user_))
+        execute_sql(conn, sql.SQL("GRANT cloudsqlsuperuser TO {}").format(role))
 
-    execute_sql(conn, sql.SQL("GRANT ALL ON SCHEMA public TO {}").format(user_))
-    execute_sql(conn, sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(user_))
-    execute_sql(conn, sql.SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {}").format(user_))
+        (cur.execute(sql.SQL("GRANT ALL ON SCHEMA pglogical TO {}").format(role)),)
+        cur.execute(
+            sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA pglogical TO {}").format(role)
+        )
+        cur.execute(
+            sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA pglogical TO {}").format(
+                role
+            )
+        )
+        cur.execute(
+            sql.SQL("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pglogical TO {}").format(
+                role
+            )
+        )
 
-    logger.info(f"Replication user {user} granted permissions")
+        cur.execute(sql.SQL("GRANT ALL ON SCHEMA public TO {}").format(role))
+        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(role))
+        cur.execute(
+            sql.SQL(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {}"
+            ).format(role)
+        )
+
+        logger.info(f"Replication user {user} granted permissions")
 
 
 def drop_subscription(conn, subscription):
@@ -225,6 +254,30 @@ def setup(config):
     status(config)
 
 
+def copy_sequence_values(config):
+    values = {}
+    with source_db(config) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT sequence_name
+                FROM information_schema.sequences
+                WHERE sequence_schema = 'public'
+                """
+            )
+            result = cur.fetchall()
+            for row in result:
+                name = row[0]
+                cur.execute("SELECT last_value FROM {}".format(name))
+                last_value = cur.fetchone()[0]
+                values[name] = last_value
+
+    with target_db(config) as conn:
+        for name, value in values.items():
+            with conn.cursor() as cur:
+                cur.execute("SELECT setval(%s, %s, true)", (name, value))
+
+
 def create_subscriber(config):
     with target_db(config) as conn:
         try:
@@ -241,7 +294,9 @@ def create_subscriber(config):
 def setup_replication_user(config):
     with target_db(config) as conn:
         create_replication_user(
-            conn, config["target"]["replication_username"], config["target"]["replication_password"]
+            conn,
+            config["target"]["replication_username"],
+            config["target"]["replication_password"],
         )
 
 
@@ -257,7 +312,9 @@ def create_subscription(config):
             ),
             [subscription, dsn, set_name],
         )
-        logger.info(f"Subscription {subscription} to replication set {set_name} created")
+        logger.info(
+            f"Subscription {subscription} to replication set {set_name} created"
+        )
 
 
 def init_replication_set(config):
@@ -265,6 +322,7 @@ def init_replication_set(config):
     with source_db(config) as conn:
         create_replication_set(conn, set_name)
         add_all_tables_to_replication_set(conn, set_name)
+        add_all_sequences_to_replication_set(conn, set_name)
 
 
 def create_provider_node(config):
@@ -287,7 +345,9 @@ def teardown_database(config):
         conn.autocommit = True
         with conn.cursor() as cursor:
             cursor.execute(
-                sql.SQL("DROP DATABASE {}").format(sql.Identifier(config["target"]["dbname"])),
+                sql.SQL("DROP DATABASE {}").format(
+                    sql.Identifier(config["target"]["dbname"])
+                ),
             )
 
 
@@ -426,7 +486,7 @@ def verify_config(config):
                 verified = False
 
     logger.info("Verifying the target database settings:")
-    with target_db(config) as conn:
+    with target_db(config, dbname="template1") as conn:
         with conn.cursor() as cur:
             cur.execute("SHOW wal_level")
             result = cur.fetchone()
@@ -537,11 +597,16 @@ def argparser():
     setup_subparsers.add_parser("subscriber", help="Create the subscriber")
     setup_subparsers.add_parser("subscription", help="Create the subscriber")
     setup_subparsers.add_parser("replication_user", help="Create the replication user")
+    setup_subparsers.add_parser("sequences", help="Copy sequence values")
 
-    teardown_subparser = subparsers.add_parser("teardown", help="Teardown the replication")
+    teardown_subparser = subparsers.add_parser(
+        "teardown", help="Teardown the replication"
+    )
     teardown_subparsers = teardown_subparser.add_subparsers(dest="teardown_command")
 
-    teardown_subparsers.add_parser("schema", help="Drop the schema on the target database")
+    teardown_subparsers.add_parser(
+        "schema", help="Drop the schema on the target database"
+    )
     teardown_subparsers.add_parser("provider", help="Drop the provider node")
     teardown_subparsers.add_parser("replication_set", help="Drop the replication set")
     teardown_subparsers.add_parser("subscriber", help="Drop the subscriber")
@@ -552,7 +617,9 @@ def argparser():
     subparsers.add_parser("stop", help="Stop the replication")
     subparsers.add_parser("verify", help="Verify the configuration")
     client = subparsers.add_parser("client", help="Connect with psql")
-    client.add_argument("--database", "-d", required=False, help="Database: source or target")
+    client.add_argument(
+        "--database", "-d", required=False, help="Database: source or target"
+    )
 
     return parser
 
@@ -577,6 +644,8 @@ def handle_setup(config, args):
         create_subscription(config)
     elif args.setup_command == "replication_user":
         setup_replication_user(config)
+    elif args.setup_command == "sequences":
+        copy_sequence_values(config)
 
 
 def handle_teardown(config, args):
