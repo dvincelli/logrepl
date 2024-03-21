@@ -159,7 +159,9 @@ def add_all_tables_to_replication_set(conn, set_name):
 def add_all_sequences_to_replication_set(conn, set_name):
     execute_sql(
         conn,
-        sql.SQL("SELECT pglogical.replication_set_add_all_sequences(%s, ARRAY['public'])"),
+        sql.SQL(
+            "SELECT pglogical.replication_set_add_all_sequences(%s, ARRAY['public'])"
+        ),
         [set_name],
     )
     logger.info(f"All sequences added to replication set {set_name}")
@@ -587,10 +589,18 @@ def argparser():
         default="/tmp/schema.sql",
     )
     schema_parser.add_argument(
-        "--dump", "-d", required=False, action='store_true', help="Dump the schema from source database"
-    ) 
+        "--dump",
+        "-d",
+        required=False,
+        action="store_true",
+        help="Dump the schema from source database",
+    )
     schema_parser.add_argument(
-        "--load", "-l", required=False, action='store_true', help="Load the schema on target database"
+        "--load",
+        "-l",
+        required=False,
+        action="store_true",
+        help="Load the schema on target database",
     )
     setup_subparsers.add_parser("provider", help="Create the provider node")
     setup_subparsers.add_parser("replication_set", help="Create the replication set")
