@@ -256,20 +256,24 @@ def setup(config):
     status(config)
 
 
+def get_sequences(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT sequence_name
+            FROM information_schema.sequences
+            WHERE sequence_schema = 'public'
+            """
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 def copy_sequence_values(config):
     values = {}
     with source_db(config) as conn:
+        sequences = get_sequences(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT sequence_name
-                FROM information_schema.sequences
-                WHERE sequence_schema = 'public'
-                """
-            )
-            result = cur.fetchall()
-            for row in result:
-                name = row[0]
+            for name in sequences:
                 cur.execute("SELECT last_value FROM {}".format(name))
                 last_value = cur.fetchone()[0]
                 values[name] = last_value
@@ -389,6 +393,139 @@ def create_database(config):
             cursor.execute(
                 sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)),
             )
+
+def grant_usage_on_schema(conn, schema, user):
+    execute_sql(
+        conn,
+        sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(user)),
+    )
+    logger.info(f"Usage granted on schema {schema} to user {user}")
+
+
+def grant_crud_on_all_tables(conn, schema, user):
+    execute_sql(
+        conn,
+        sql.SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(user)),
+    )
+    logger.info(f"CRUD granted on all tables in schema {schema} to user {user}")
+
+
+def grant_select_on_all_sequences(conn, schema, user):
+    execute_sql(
+        conn,
+        sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(user)),
+    )
+    logger.info(f"SELECT granted on all sequences in schema {schema} to user {user}")
+
+
+
+def grant_execute_on_all_functions(conn, schema, user):
+    execute_sql(
+        conn,
+        sql.SQL("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(user)),
+    )
+    logger.info(f"EXECUTE granted on all functions in schema {schema} to user {user}")
+
+
+def grant_permissions_on_schema(conn, schema, user):
+    grant_usage_on_schema(conn, schema, user)
+    grant_crud_on_all_tables(conn, schema, user)
+    grant_select_on_all_sequences(conn, schema, user)
+    grant_execute_on_all_functions(conn, schema, user)
+
+
+def alter_owner_on_schema(conn, schema, user):
+    execute_sql(
+        conn,
+        sql.SQL("ALTER SCHEMA {} OWNER TO {}").format(sql.Identifier(schema), sql.Identifier(user)),
+    )
+
+
+def get_tables_in_schema(conn, schema):
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT table_name FROM information_schema.tables WHERE table_schema = %s"),
+            [schema],
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def alter_owner_on_all_tables_in_schema(conn, schema, user):
+    for table in get_tables_in_schema(conn, schema):
+        execute_sql(
+            conn,
+            sql.SQL("ALTER TABLE {} OWNER TO {}").format(sql.Identifier(table), sql.Identifier(user)),
+        )
+
+
+def alter_owner_on_all_sequences_in_schema(conn, schema, user):
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = %s"),
+            [schema],
+        )
+        for row in cur.fetchall():
+            sequence = row[0]
+            execute_sql(
+                conn,
+                sql.SQL("ALTER SEQUENCE {} OWNER TO {}").format(sql.Identifier(sequence), sql.Identifier(user)),
+            )
+
+
+def compare_tables(conn1, conn2):
+    tables1 = get_tables_in_schema(conn1, 'public')
+    tables2 = get_tables_in_schema(conn2, 'public')
+    if set(tables1) == set(tables2):
+        logger.info("Tables are the same")
+    else:
+        logger.error("Tables are different: %r" % (set(tables1) ^ set(tables2)))
+
+
+def compare_sequences(conn1, conn2):
+    sequences1 = get_sequences(conn1)
+    sequences2 = get_sequences(conn2)
+    if set(sequences1) == set(sequences2):
+        logger.info("Sequences are the same")
+    else:
+        logger.error("Sequences are different: %r" % (set(sequences1) ^ set(sequences2)))
+
+
+def compare_number_of_rows(conn1, conn2):
+    tables1 = get_tables_in_schema(conn1, 'public')
+    tables2 = get_tables_in_schema(conn2, 'public')
+    common_tables = set(tables1) & set(tables2)
+    for table in common_tables:
+        with conn1.cursor() as cur1, conn2.cursor() as cur2:
+            cur1.execute(f"SELECT COUNT(*) FROM {table}")
+            count1 = cur1.fetchone()[0]
+            cur2.execute(f"SELECT COUNT(*) FROM {table}")
+            count2 = cur2.fetchone()[0]
+            if count1 != count2:
+                logger.error(f"Table {table} has different number of rows: {count1} vs {count2}")
+            else:
+                logger.info(f"Table {table} has the same number of rows: {count1}")
+
+
+def compare_sequence_values(conn1, conn2):
+    for sequence in get_sequences(conn1):
+        with conn1.cursor() as cur1, conn2.cursor() as cur2:
+            cur1.execute(f"SELECT last_value FROM {sequence}")
+            value1 = cur1.fetchone()[0]
+            cur2.execute(f"SELECT last_value FROM {sequence}")
+            value2 = cur2.fetchone()[0]
+            if value1 != value2:
+                logger.error(f"Sequence {sequence} has different values: {value1} vs {value2}")
+            else:
+                logger.info(f"Sequence {sequence} has the same value: {value1}")
+
+
+def compare_databases(config):
+    with source_db(config) as conn1, target_db(config) as conn2:
+        compare_sequences(conn1, conn2)
+        compare_sequence_values(conn1, conn2)
+
+        compare_tables(conn1, conn2)
+        compare_number_of_rows(conn1, conn2)
 
 
 def stop(config):
@@ -626,6 +763,7 @@ def argparser():
     subparsers.add_parser("status", help="Show the status of the replication")
     subparsers.add_parser("stop", help="Stop the replication")
     subparsers.add_parser("verify", help="Verify the configuration")
+    subparsers.add_parser("compare", help="Compare the source and target databases")
     client = subparsers.add_parser("client", help="Connect with psql")
     client.add_argument(
         "--database", "-d", required=False, help="Database: source or target"
@@ -700,6 +838,8 @@ def main():
         verify_config(config)
     elif args.command == "client":
         handle_client(config, args)
+    elif args.command == "compare":
+        compare_databases(config)
     else:
         print("Unknown command")
         parser.print_help()
