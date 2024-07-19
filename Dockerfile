@@ -2,6 +2,8 @@ FROM python:3.12-alpine
 
 RUN apk add --no-cache postgresql15-client
 
+RUN addgroup -g 1000 -S app && adduser -u 1000 -S app -G app -h /app
+
 COPY pdm.lock pyproject.toml /app/
 
 COPY logrepl /app/logrepl

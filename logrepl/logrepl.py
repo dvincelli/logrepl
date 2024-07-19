@@ -72,7 +72,12 @@ def dump_schema(config, file="/tmp/schema.sql"):
     command = (
         f"pg_dump -h {host} -p {port} -U {user} -s {dbname} -n {schema} -x -O > {file}"
     )
-    run_subprocess(command, env={"PGPASSWORD": password, "PGSSLMODE": sslmode})
+
+    env = os.environ.copy()
+    env["PGPASSWORD"] = password
+    env["PGSSLMODE"] = sslmode
+
+    run_subprocess(command, env=env)
 
 
 def restore_schema(config, file="/tmp/schema.sql"):
@@ -88,7 +93,11 @@ def restore_schema(config, file="/tmp/schema.sql"):
     sslmode = config["source"].get("sslmode", "require")
 
     command = f"psql -h {host} -p {port} -U {user} -d {dbname} -f {file}"
-    run_subprocess(command, env={"PGPASSWORD": password, "PGSSLMODE": sslmode})
+    env = os.environ.copy()
+    env["PGPASSWORD"] = password
+    env["PGSSLMODE"] = sslmode
+
+    run_subprocess(command, env=env)
 
 
 def create_pglogical_extension(conn):
@@ -537,7 +546,6 @@ def verify_config(config):
 
 
 def handle_client(config, args):
-    env = os.environ.copy()
 
     db = args.database
     host = config[db]["host"]
@@ -549,10 +557,13 @@ def handle_client(config, args):
 
     args = ["psql", "-h", host, "-p", port, "-U", user, "-d", dbname]
 
+    env = os.environ.copy()
     env["PGPASSWORD"] = password
     env["PGSSLMODE"] = sslmode
 
-    os.execve("/usr/bin/psql", args, env)
+    psql = os.popen("which psql").read().strip()
+
+    os.execve(psql, args, env)
 
 
 def dump_config(config):
