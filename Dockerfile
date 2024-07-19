@@ -1,6 +1,6 @@
 FROM python:3.12-alpine
 
-RUN apk add --no-cache postgresql15-client
+RUN apk add --no-cache postgresql15-client vim
 
 RUN addgroup -g 1000 -S app && adduser -u 1000 -S app -G app -h /app
 
