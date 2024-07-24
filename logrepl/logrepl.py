@@ -7,6 +7,7 @@ import io
 import os
 import contextlib
 from loguru import logger
+from .metrics import main_loop as metrics_main_loop
 
 
 def run_subprocess(command, env=None):
@@ -641,6 +642,7 @@ def argparser():
     client.add_argument(
         "--database", "-d", required=False, help="Database: source or target"
     )
+    subparsers.add_parser("metrics", help="Start the prometheus metrics server")
 
     return parser
 
@@ -711,6 +713,8 @@ def main():
         verify_config(config)
     elif args.command == "client":
         handle_client(config, args)
+    elif args.command == "metrics":
+        metrics_main_loop(config["source"])
     else:
         print("Unknown command")
         parser.print_help()
