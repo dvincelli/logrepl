@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  primary:
+    image: dvincelli/postgres:15
+    container_name: primary
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+    command: "-c wal-level=logical -c max-worker-processes=10 -c shared-preload-libraries=pglogical"
+    volumes:
+      - primary_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  replica:
+    image: dvincelli/postgres:15
+    container_name: replica
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+    command: "-c wal-level=logical -c max-worker-processes=10 -c shared-preload-libraries='pglogical'"
+    volumes:
+      - replica_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    depends_on:
+      - primary
+
+volumes:
+  primary_data:
+  replica_data:
