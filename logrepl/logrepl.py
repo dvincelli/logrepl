@@ -1,62 +1,17 @@
 import subprocess
 import psycopg
-from psycopg import sql
 import argparse
-import configparser
+from .config import load_config_from_ini, load_config_from_env
 import io
 import os
-import contextlib
 from loguru import logger
 from .metrics import main_loop as metrics_main_loop
+from .db import source_db, target_db, execute_sql, sql
 
 
 def run_subprocess(command, env=None):
     logger.debug(f"Running command: {command}")
     subprocess.run(command, shell=True, check=True, env=env)
-
-
-@contextlib.contextmanager
-def connect_db(db, user, password, host, port):
-    logger.debug(f"Connecting to database {db} on {host}:{port} as {user}")
-    with psycopg.connect(
-        dbname=db, user=user, host=host, port=port, password=password, sslmode="require"
-    ) as cxn:
-        logger.debug(f"Connected to database {db} on {host}:{port} as {user}")
-        yield cxn
-
-
-@contextlib.contextmanager
-def source_db(config, dbname=None):
-    conf = config["source"]
-    with connect_db(
-        dbname or conf["dbname"],
-        conf["username"],
-        conf["password"],
-        conf["host"],
-        conf["port"],
-    ) as conn:
-        yield conn
-
-
-@contextlib.contextmanager
-def target_db(config, dbname=None):
-    conf = config["target"]
-    with connect_db(
-        dbname or conf["dbname"],
-        conf["username"],
-        conf["password"],
-        conf["host"],
-        conf["port"],
-    ) as conn:
-        yield conn
-
-
-def execute_sql(conn, query, args=None):
-    args = args or []
-    logger.debug(f"Executing query: {query} with args: {args}")
-    with conn.cursor() as cur:
-        cur.execute(query, args)
-    conn.commit()
 
 
 def dump_schema(config, file="/tmp/schema.sql"):
@@ -690,8 +645,10 @@ def main():
     parser = argparser()
     args = parser.parse_args()
 
-    config = configparser.ConfigParser()
-    config.read(args.config)
+    if args.config:
+        config = load_config_from_ini(args.config)
+    else:
+        config = load_config_from_env()
 
     if args.command is None:
         parser.print_help()
@@ -714,7 +671,7 @@ def main():
     elif args.command == "client":
         handle_client(config, args)
     elif args.command == "metrics":
-        metrics_main_loop(config["source"])
+        metrics_main_loop(source_db, config)
     else:
         print("Unknown command")
         parser.print_help()

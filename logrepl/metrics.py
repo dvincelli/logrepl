@@ -1,26 +1,52 @@
-from prometheus_client import start_http_server, Gauge
+from prometheus_client import start_http_server, Gauge, Counter
 import time
-import psycopg
+from loguru import logger
 
 
-REPLICATION_LAG = Gauge('replication_lag', 'Replication lag in seconds')
+REPLICATION_LAG = Gauge('replication_lag', 'Replication lag in seconds', ['host', 'client', 'state', 'database', 'application_name'])
+CONNECTION_ERRORS = Counter('connection_errors', 'Connection errors', ['host', 'database', 'application_name'])
+POLL_INTERVAL = 10
 
 
-def query_replication_lag(db_config):
-    with psycopg.connect(**db_config) as conn:
+def query_replication_lag(source_db, config):
+    with source_db(config) as conn:
         with conn.cursor() as cur:
-            cur.execute('SELECT pg_last_wal_receive_lsn()')
-            receive_lsn = cur.fetchone()[0]
-            cur.execute('SELECT pg_last_wal_replay_lsn()')
-            replay_lsn = cur.fetchone()[0]
-            delay = receive_lsn - replay_lsn
-            return delay
+            logger.debug("Querying replication lag")
+            query = '''
+            SELECT
+                application_name,
+                client_addr,
+                state,
+                pg_current_wal_lsn() - replay_lsn AS lag_bytes
+            FROM
+                pg_stat_replication
+            WHERE
+                application_name = %s;
+            '''
+            cur.execute(query, (config["target"]["subscription"],))
+            row = cur.fetchone()
+            logger.debug(f"Replication lag: {row}")
+            return row
 
 
-def main_loop(db_config):
+def main_loop(source_db, config):
     start_http_server(8000)
     while True:
-        lag = query_replication_lag(db_config)
-        REPLICATION_LAG.set(lag, labels={'host': db_config['host'], database: db_config['database']})
-        time.sleep(10)
-
+        try:
+            application_name, client_addr, state, lag_bytes = query_replication_lag(source_db, config)
+            REPLICATION_LAG.labels(**{
+                'host': config['source']['host'],
+                'client': client_addr,
+                'state': state,
+                'database': config['source']['dbname'],
+                'application_name': application_name
+            }).set(lag_bytes)
+            time.sleep(POLL_INTERVAL)
+        except Exception as e:
+            logger.exception("Error querying replication lag")
+            CONNECTION_ERRORS.labels(**{
+                'host': config['source']['host'],
+                'database': config['source']['dbname'],
+                'application_name': config['target']['subscription'],
+                'error': str(e)
+            }).inc()
