@@ -32,7 +32,7 @@ class TargetConfig(TypedDict):
     node: str
     subscription: str
 
-    replication_username: str  # TODO: rename to replication_user
+    replication_username: str 
     replication_password: str
 
 
