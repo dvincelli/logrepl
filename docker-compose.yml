@@ -29,6 +29,23 @@ services:
     depends_on:
       - primary
 
+  logrepl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SOURCE_USERNAME: myuser
+      SOURCE_PASSWORD: mypassword
+      SOURCE_HOST: primary
+      SOURCE_PORT: "5432"
+      SOURCE_DBNAME: mydb
+      TARGET_USERNAME: myuser
+      TARGET_PASSWORD: mypassword
+      TARGET_HOST: replica
+      TARGET_PORT: "5432"
+      TARGET_DBNAME: mydb
+    command: sleep infinity
+
 volumes:
   primary_data:
   replica_data:

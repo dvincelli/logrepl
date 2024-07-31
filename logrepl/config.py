@@ -6,7 +6,7 @@ from typing import TypedDict, Union, Literal, Optional
 class SourceConfig(TypedDict):
     host: str
     port: Optional[str]
-    user: str
+    username: str
     password: str
     dbname: str
     # TODO: support user provided CA and client cert and key
@@ -22,7 +22,7 @@ class SourceConfig(TypedDict):
 class TargetConfig(TypedDict):
     host: str
     port: Optional[str]
-    user: str
+    username: str
     password: str
     dbname: str
     # TODO: support user provided CA and client cert and key
@@ -32,7 +32,7 @@ class TargetConfig(TypedDict):
     node: str
     subscription: str
 
-    replication_username: str 
+    replication_username: str
     replication_password: str
 
 
@@ -53,4 +53,8 @@ def load_config_from_env():
             env_value = os.environ.get(env_key)
             if env_value is not None:
                 config[section][key] = env_value
+        if "sslmode" not in config[section]:
+            config[section]["sslmode"] = "disable"
+        if "port" not in config[section]:
+            config[section]["port"] = "5432"
     return config

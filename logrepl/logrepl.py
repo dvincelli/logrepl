@@ -540,7 +540,7 @@ def argparser():
     )
 
     parser.add_argument(
-        "--config", "-c", required=True, help="Path to the configuration file"
+        "--config", "-c", required=False, help="Path to the configuration file"
     )
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
 
