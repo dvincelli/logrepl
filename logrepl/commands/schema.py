@@ -10,9 +10,12 @@ def create_database(config):
     with target_db(config, dbname="template1") as conn:
         conn.autocommit = True
         with conn.cursor() as cursor:
-            cursor.execute(
-                sql.SQL("CREATE DATABASE IF NOT EXISTS {}").format(sql.Identifier(dbname)),
-            )
+            cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+            exists = cursor.fetchone()
+            if not exists:
+                cursor.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)),
+                )
 
 
 def run_subprocess(command, env=None):
