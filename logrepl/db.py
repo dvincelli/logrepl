@@ -1,5 +1,4 @@
 import psycopg
-from psycopg import sql  # noqa
 from loguru import logger
 import contextlib
 
@@ -48,3 +47,18 @@ def execute_sql(conn, query, args=None):
     with conn.cursor() as cur:
         cur.execute(query, args)
     conn.commit()
+
+
+def source_dsn(config):
+    source = config["source"]
+    sslmode = config["source"].get("sslmode", "require")
+    return f"host={source['host']} port={source['port']} dbname={source['dbname']} user={source['username']} password={source['password']} sslmode={sslmode}"
+
+
+def target_dsn(config, connect_as_replication_user=True):
+    target = config["target"]
+    sslmode = config["target"].get("sslmode", "require")
+    if connect_as_replication_user:
+        return f"host={target['host']} port={target['port']} dbname={target['dbname']} user={target['replication_username']} password={target['replication_password']} sslmode={sslmode}"
+    else:
+        return f"host={target['host']} port={target['port']} dbname={target['dbname']} user={target['username']} password={target['password']} sslmode={sslmode}"

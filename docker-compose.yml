@@ -18,7 +18,7 @@ services:
     image: dvincelli/postgres:15
     container_name: replica
     environment:
-      POSTGRES_DB: mydb
+      POSTGRES_DB: postgres
       POSTGRES_USER: myuser
       POSTGRES_PASSWORD: mypassword
     command: "-c wal-level=logical -c max-worker-processes=10 -c shared-preload-libraries='pglogical'"
@@ -39,12 +39,22 @@ services:
       SOURCE_HOST: primary
       SOURCE_PORT: "5432"
       SOURCE_DBNAME: mydb
+      SOURCE_NODE: mydb_provider
+      SOURCE_REPLICATION_SET: mydb
+      SOURCE_SSLMODE: disable
       TARGET_USERNAME: myuser
       TARGET_PASSWORD: mypassword
       TARGET_HOST: replica
       TARGET_PORT: "5432"
       TARGET_DBNAME: mydb
+      TARGET_REPLICATION_USERNAME: repl
+      TARGET_REPLICATION_PASSWORD: replpassword
+      TARGET_NODE: mydb_subscriber
+      TARGET_SUBSCRIPTION: mydb_subscription
+      TARGET_SSLMODE: disable
     command: sleep infinity
+    volumes:
+      - ./logrepl:/app/logrepl
 
 volumes:
   primary_data:

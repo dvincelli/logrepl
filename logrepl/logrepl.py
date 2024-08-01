@@ -1,211 +1,18 @@
-import subprocess
 import psycopg
 import argparse
+from pprint import pprint
 from .config import load_config_from_ini, load_config_from_env
 import io
-import os
 from loguru import logger
-from .metrics import main_loop as metrics_main_loop
-from .db import source_db, target_db, execute_sql, sql
-
-
-def run_subprocess(command, env=None):
-    logger.debug(f"Running command: {command}")
-    subprocess.run(command, shell=True, check=True, env=env)
-
-
-def dump_schema(config, file="/tmp/schema.sql"):
-    logger.debug(f"Dumping schema to {file}")
-
-    dbname = config["source"]["dbname"]
-    user = config["source"]["username"]
-    password = config["source"]["password"]
-    host = config["source"]["host"]
-    port = config["source"]["port"]
-    sslmode = config["source"].get("sslmode", "require")
-    schema = "public"
-
-    command = (
-        f"pg_dump -h {host} -p {port} -U {user} -s {dbname} -n {schema} -x -O > {file}"
-    )
-
-    env = os.environ.copy()
-    env["PGPASSWORD"] = password
-    env["PGSSLMODE"] = sslmode
-
-    run_subprocess(command, env=env)
-
-
-def restore_schema(config, file="/tmp/schema.sql"):
-    logger.debug(f"Restoring schema from {file}")
-
-    create_database(config)
-
-    dbname = config["target"]["dbname"]
-    user = config["target"]["username"]
-    password = config["target"]["password"]
-    host = config["target"]["host"]
-    port = config["target"]["port"]
-    sslmode = config["source"].get("sslmode", "require")
-
-    command = f"psql -h {host} -p {port} -U {user} -d {dbname} -f {file}"
-    env = os.environ.copy()
-    env["PGPASSWORD"] = password
-    env["PGSSLMODE"] = sslmode
-
-    run_subprocess(command, env=env)
-
-
-def create_pglogical_extension(conn):
-    logger.debug("Creating pglogical extension")
-    execute_sql(conn, "CREATE EXTENSION IF NOT EXISTS pglogical")
-
-
-def source_dsn(config):
-    source = config["source"]
-    sslmode = config["source"].get("sslmode", "require")
-    return f"host={source['host']} port={source['port']} dbname={source['dbname']} user={source['username']} password={source['password']} sslmode={sslmode}"
-
-
-def target_dsn(config, connect_as_replication_user=True):
-    target = config["target"]
-    sslmode = config["target"].get("sslmode", "require")
-    if connect_as_replication_user:
-        return f"host={target['host']} port={target['port']} dbname={target['dbname']} user={target['replication_username']} password={target['replication_password']} sslmode={sslmode}"
-    else:
-        return f"host={target['host']} port={target['port']} dbname={target['dbname']} user={target['username']} password={target['password']} sslmode={sslmode}"
-
-
-def create_node(conn, node, dsn):
-    execute_sql(
-        conn,
-        sql.SQL("SELECT pglogical.create_node(node_name := %s, dsn := %s)"),
-        [node, dsn],
-    )
-    logger.info(f"Node {node} created")
-
-
-def drop_node(conn, node):
-    execute_sql(
-        conn,
-        sql.SQL("SELECT pglogical.drop_node(node_name := %s)"),
-        [node],
-    )
-    logger.info(f"Node {node} dropped")
-
-
-def create_replication_set(conn, set_name):
-    execute_sql(
-        conn,
-        sql.SQL("SELECT pglogical.create_replication_set(set_name := %s)"),
-        [set_name],
-    )
-    logger.info(f"Replication set {set_name} created")
-
-
-def drop_replication_set(conn, set_name):
-    execute_sql(
-        conn,
-        sql.SQL("SELECT pglogical.drop_replication_set(set_name := %s)"),
-        [set_name],
-    )
-    logger.info(f"Replication set {set_name} dropped")
-
-
-def add_all_tables_to_replication_set(conn, set_name):
-    execute_sql(
-        conn,
-        sql.SQL("SELECT pglogical.replication_set_add_all_tables(%s, ARRAY['public'])"),
-        [set_name],
-    )
-    logger.info(f"All tables added to replication set {set_name}")
-
-
-def add_all_sequences_to_replication_set(conn, set_name):
-    execute_sql(
-        conn,
-        sql.SQL(
-            "SELECT pglogical.replication_set_add_all_sequences(%s, ARRAY['public'])"
-        ),
-        [set_name],
-    )
-    logger.info(f"All sequences added to replication set {set_name}")
-
-
-def create_replication_user(conn, user, password):
-    role = sql.Identifier(user)
-
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = {}").format(
-                sql.Literal(user)
-            )
-        )
-        exists = cur.fetchone()
-        if not exists:
-            cur.execute(
-                sql.SQL("CREATE ROLE {} WITH REPLICATION LOGIN PASSWORD {}").format(
-                    role, sql.Literal(password)
-                ),
-            )
-            logger.info(f"Replication user {user} created")
-
-        # if cloudsqlsuperuser permission group exists, grant it:
-        cur.execute(sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = 'cloudsqlsuperuser'"))
-        exists = cur.fetchone()
-        if cur.rowcount > 0:
-            execute_sql(conn, sql.SQL("GRANT cloudsqlsuperuser TO {}").format(role))
-
-        # For alloydb grant alloydbsuperuser instead.
-        cur.execute(sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = 'alloydbsuperuser'"))
-        if cur.rowcount > 0:
-            execute_sql(conn, sql.SQL("GRANT alloydbsuperuser TO {}").format(role))
-
-
-        cur.execute(sql.SQL("GRANT ALL ON SCHEMA pglogical TO {}").format(role))
-        cur.execute(
-            sql.SQL("GRANT SELECT ON ALL TABLES IN SCHEMA pglogical TO {}").format(role)
-        )
-        cur.execute(
-            sql.SQL("GRANT SELECT ON ALL SEQUENCES IN SCHEMA pglogical TO {}").format(
-                role
-            )
-        )
-        cur.execute(
-            sql.SQL("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pglogical TO {}").format(
-                role
-            )
-        )
-
-        cur.execute(sql.SQL("GRANT ALL ON SCHEMA public TO {}").format(role))
-        cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(role))
-        cur.execute(
-            sql.SQL(
-                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {}"
-            ).format(role)
-        )
-
-        logger.info(f"Replication user {user} granted permissions")
-
-
-def drop_subscription(conn, subscription):
-    execute_sql(
-        conn,
-        sql.SQL("SELECT pglogical.drop_subscription(subscription_name := %s)"),
-        [subscription],
-    )
-    logger.info(f"Subscription {subscription} dropped")
-
-
-def subscription_status(conn, subscription):
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("SELECT status FROM pglogical.show_subscription_status(%s)"),
-            [subscription],
-        )
-        result = cur.fetchone()
-        status = result[0]
-        logger.info(f"Subscription status: {status}")
+from psycopg import sql
+from .db import source_db, target_db, execute_sql, source_dsn, target_dsn
+from .commands.metrics import metrics_server
+from .commands.verify import verify_config
+from .commands.schema import dump_schema, restore_schema
+from .commands.client import handle_client
+from .commands.setup import create_pglogical_extension, create_node, create_replication_set, create_replication_user, add_all_tables_to_replication_set, add_all_sequences_to_replication_set
+from .commands.status import subscription_status
+from .commands.teardown import drop_node, drop_replication_set, drop_subscription
 
 
 # -- commands --
@@ -227,28 +34,25 @@ def setup(config):
     status(config)
 
 
-def copy_sequence_values(config):
-    values = {}
+def get_sequence_names(config, schema="public"):
     with source_db(config) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT sequence_name
-                FROM information_schema.sequences
-                WHERE sequence_schema = 'public'
-                """
+                sql.SQL(
+                    "SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = %s"
+                ),
+                [schema],
             )
             result = cur.fetchall()
-            for row in result:
-                name = row[0]
-                cur.execute("SELECT last_value FROM {}".format(name))
-                last_value = cur.fetchone()[0]
-                values[name] = last_value
+            return [row[0] for row in result]
 
-    with target_db(config) as conn:
-        for name, value in values.items():
-            with conn.cursor() as cur:
-                cur.execute("SELECT setval(%s, %s, true)", (name, value))
+
+def synchronize_sequences(config):
+    sequences = get_sequence_names(config, "public")
+    with source_db(config) as conn:
+        with conn.cursor() as cur:
+            for sequence in sequences:
+                cur.execute("SELECT pglogical.synchronize_sequence(%s)", [f"{schema}.{sequence}"])
 
 
 def create_subscriber(config):
@@ -352,16 +156,6 @@ def create_extension(config):
         create_pglogical_extension(conn)
 
 
-def create_database(config):
-    dbname = config["target"]["dbname"]
-    with target_db(config, dbname="template1") as conn:
-        conn.autocommit = True
-        with conn.cursor() as cursor:
-            cursor.execute(
-                sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname)),
-            )
-
-
 def stop(config):
     with target_db(config) as conn:
         drop_subscription(conn, config["target"]["subscription"])
@@ -375,162 +169,12 @@ def teardown_all(config):
     teardown_provider(config)
 
 
-def verify_config(config):
-    logger.info("Verifying the configuration")
-
-    verified = True
-
-    with source_db(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            result = cur.fetchone()
-            if result != (1,):
-                raise SystemExit("Source database is not accessible")
-    logger.info("Source database is accessible")
-
-    with target_db(config, dbname="template1") as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            result = cur.fetchone()
-            if result != (1,):
-                raise SystemExit("Target database is not accessible")
-    logger.info("Target database is accessible")
-
-    # very the following settings on both source and target databases:
-    # wal_level = 'logical'
-    # shared_preload_libraries = 'pglogical'
-    # max_worker_processes = 10   # one per database needed on provider node
-    # one per node needed on subscriber node
-    logger.info("Verifying the source database settings:")
-    with source_db(config) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SHOW wal_level")
-            result = cur.fetchone()
-            wal_level = result[0]
-            logger.info(f"wal_level: {wal_level}")
-            if wal_level != "logical":
-                logger.error("wal_level is not set to 'logical' on source database")
-                verified = False
-
-            cur.execute("SHOW shared_preload_libraries")
-            result = cur.fetchone()
-            shared_preload_libraries = result[0].split(",")
-            logger.info(
-                f"shared_preload_libraries: {','.join(shared_preload_libraries)}"
-            )
-            if "pglogical" not in shared_preload_libraries:
-                logger.error(
-                    "shared_preload_libraries does not include 'pglogical' on source database"
-                )
-                verified = False
-
-            cur.execute("SHOW max_worker_processes")
-            result = cur.fetchone()
-            max_worker_processes = int(result[0])
-            logger.info(f"max_worker_processes: {max_worker_processes}")
-            if max_worker_processes < 10:
-                logger.error("max_worker_processes is less than 10 on source database")
-                verified = False
-
-            cur.execute("SHOW max_replication_slots")
-            result = cur.fetchone()
-            max_replication_slots = int(result[0])
-            logger.info(f"max_replication_slots: {max_replication_slots}")
-            if max_replication_slots < 10:
-                logger.error("max_replication_slots is less than 10 on source database")
-                verified = False
-
-            cur.execute("SHOW max_wal_senders")
-            result = cur.fetchone()
-            max_wal_senders = int(result[0])
-            logger.info(f"max_wal_senders: {max_wal_senders}")
-            if max_wal_senders < 10:
-                logger.error("max_wal_senders is less than 10 on source database")
-                verified = False
-
-            # PGLogical does not support replication between databases with different encoding.
-            # We recommend using UTF-8 encoding in all replicated databases.
-            cur.execute("SHOW server_encoding")
-            result = cur.fetchone()
-            server_encoding = result[0]
-            logger.info(f"server_encoding: {server_encoding}")
-            if server_encoding != "UTF8":
-                logger.error("server_encoding is not set to 'UTF8' on source database")
-                verified = False
-
-    logger.info("Verifying the target database settings:")
-    with target_db(config, dbname="template1") as conn:
-        with conn.cursor() as cur:
-            cur.execute("SHOW wal_level")
-            result = cur.fetchone()
-            wal_level = result[0]
-            logger.info(f"wal_level: {wal_level}")
-            if wal_level != "logical":
-                logger.error("wal_level is not set to 'logical' on target database")
-                verified = False
-
-            cur.execute("SHOW shared_preload_libraries")
-            result = cur.fetchone()
-            shared_preload_libraries = result[0].split(",")
-            logger.info(
-                f"shared_preload_libraries: {','.join(shared_preload_libraries)}"
-            )
-            if "pglogical" not in shared_preload_libraries:
-                logger.error(
-                    "shared_preload_libraries does not include 'pglogical' on target database"
-                )
-                verified = False
-
-            cur.execute("SHOW max_worker_processes")
-            result = cur.fetchone()
-            max_worker_processes = int(result[0])
-            logger.info(f"max_worker_processes: {max_worker_processes}")
-            if max_worker_processes < 10:
-                logger.error("max_worker_processes is less than 10 on target database")
-                raise SystemExit(
-                    "max_worker_processes is less than 10 on target database"
-                )
-
-            cur.execute("SHOW server_encoding")
-            result = cur.fetchone()
-            server_encoding = result[0]
-            logger.info(f"server_encoding: {server_encoding}")
-            if server_encoding != "UTF8":
-                logger.error("server_encoding is not set to 'UTF8' on target database")
-                verified = False
-
-    if verified:
-        logger.info("Configuration verification passed")
-    else:
-        logger.error("Configuration verification failed")
-
-    return verified
-
-
-def handle_client(config, args):
-
-    db = args.database
-    host = config[db]["host"]
-    port = config[db]["port"]
-    user = config[db]["username"]
-    dbname = config[db]["dbname"]
-    password = config[db]["password"]
-    sslmode = config[db].get("sslmode", "require")
-
-    args = ["psql", "-h", host, "-p", port, "-U", user, "-d", dbname]
-
-    env = os.environ.copy()
-    env["PGPASSWORD"] = password
-    env["PGSSLMODE"] = sslmode
-
-    psql = os.popen("which psql").read().strip()
-
-    os.execve(psql, args, env)
-
-
 def dump_config(config):
     out = io.StringIO()
-    config.write(out)
+    if isinstance(config, dict):
+        pprint(config, stream=out)
+    else:
+        config.write(out)
     logger.info(out.getvalue())
 
 
@@ -629,7 +273,7 @@ def handle_setup(config, args):
     elif args.setup_command == "replication_user":
         setup_replication_user(config)
     elif args.setup_command == "sequences":
-        copy_sequence_values(config)
+        synchronize_sequences(config)
 
 
 def handle_teardown(config, args):
@@ -677,7 +321,7 @@ def main():
     elif args.command == "client":
         handle_client(config, args)
     elif args.command == "metrics":
-        metrics_main_loop(source_db, config)
+        metrics_server(config)
     else:
         print("Unknown command")
         parser.print_help()
