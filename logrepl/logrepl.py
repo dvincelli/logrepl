@@ -18,6 +18,7 @@ from .commands.setup import (
     add_all_tables_to_replication_set,
     add_all_sequences_to_replication_set,
 )
+from .commands.pgbench import init_pgbench
 from .commands.status import subscription_status
 from .commands.teardown import drop_node, drop_replication_set, drop_subscription
 
@@ -207,6 +208,9 @@ def argparser():
     setup_subparsers = setup_subparser.add_subparsers(dest="setup_command")
     setup_subparsers.add_parser("all", help="Setup the replication")
     setup_subparsers.add_parser("extension", help="Create the pglogical extension")
+    setup_subparsers.add_parser(
+        "pgbench", help="Initialize a pgbench database in the source, for testing."
+    )
 
     schema_parser = setup_subparsers.add_parser("schema", help="Create the schema")
     schema_parser.add_argument(
@@ -285,6 +289,8 @@ def handle_setup(config, args):
         setup_replication_user(config)
     elif args.setup_command == "sequences":
         synchronize_sequences(config)
+    elif args.setup_command == "pgbench":
+        init_pgbench(config)
 
 
 def handle_teardown(config, args):
