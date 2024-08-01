@@ -10,7 +10,12 @@ class SourceConfig(TypedDict):
     password: str
     dbname: str
     # TODO: support user provided CA and client cert and key
-    sslmode: Union[Literal["disable"], Literal["require"], Literal["verify-ca"], Literal["verify-full"]]
+    sslmode: Union[
+        Literal["disable"],
+        Literal["require"],
+        Literal["verify-ca"],
+        Literal["verify-full"],
+    ]
     schema: Optional[str]
 
     node: str
@@ -26,7 +31,12 @@ class TargetConfig(TypedDict):
     password: str
     dbname: str
     # TODO: support user provided CA and client cert and key
-    sslmode: Union[Literal["disable"], Literal["require"], Literal["verify-ca"], Literal["verify-full"]]
+    sslmode: Union[
+        Literal["disable"],
+        Literal["require"],
+        Literal["verify-ca"],
+        Literal["verify-full"],
+    ]
     schema: Optional[str]
 
     node: str
@@ -43,10 +53,7 @@ def load_config_from_ini(ini_file):
 
 
 def load_config_from_env():
-    config = {
-        "source": SourceConfig(),
-        "target": TargetConfig()
-    }
+    config = {"source": SourceConfig(), "target": TargetConfig()}
     for section, typed_dict in [("source", SourceConfig), ("target", TargetConfig)]:
         for key in typed_dict.__annotations__.keys():
             env_key = f"{section}_{key}".upper()

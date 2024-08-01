@@ -36,7 +36,7 @@ def target_db(config, dbname=None):
         conf["password"],
         conf["host"],
         conf["port"],
-        conf["sslmode"]
+        conf["sslmode"],
     ) as conn:
         yield conn
 

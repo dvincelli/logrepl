@@ -10,7 +10,14 @@ from .commands.metrics import metrics_server
 from .commands.verify import verify_config
 from .commands.schema import dump_schema, restore_schema
 from .commands.client import handle_client
-from .commands.setup import create_pglogical_extension, create_node, create_replication_set, create_replication_user, add_all_tables_to_replication_set, add_all_sequences_to_replication_set
+from .commands.setup import (
+    create_pglogical_extension,
+    create_node,
+    create_replication_set,
+    create_replication_user,
+    add_all_tables_to_replication_set,
+    add_all_sequences_to_replication_set,
+)
 from .commands.status import subscription_status
 from .commands.teardown import drop_node, drop_replication_set, drop_subscription
 
@@ -53,7 +60,10 @@ def synchronize_sequences(config):
     with source_db(config) as conn:
         with conn.cursor() as cur:
             for sequence in sequences:
-                cur.execute("SELECT pglogical.synchronize_sequence(%s)", [f"{schema}.{sequence}"])
+                cur.execute(
+                    "SELECT pglogical.synchronize_sequence(%s)",
+                    [f"{schema}.{sequence}"],
+                )
 
 
 def create_subscriber(config):

@@ -65,13 +65,17 @@ def create_replication_user(conn, user, password):
             logger.info(f"Replication user {user} created")
 
         # if cloudsqlsuperuser permission group exists, grant it:
-        cur.execute(sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = 'cloudsqlsuperuser'"))
+        cur.execute(
+            sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = 'cloudsqlsuperuser'")
+        )
         exists = cur.fetchone()
         if cur.rowcount > 0:
             execute_sql(conn, sql.SQL("GRANT cloudsqlsuperuser TO {}").format(role))
 
         # For alloydb grant alloydbsuperuser instead.
-        cur.execute(sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = 'alloydbsuperuser'"))
+        cur.execute(
+            sql.SQL("SELECT 1 FROM pg_roles WHERE rolname = 'alloydbsuperuser'")
+        )
         if cur.rowcount > 0:
             execute_sql(conn, sql.SQL("GRANT alloydbsuperuser TO {}").format(role))
 
