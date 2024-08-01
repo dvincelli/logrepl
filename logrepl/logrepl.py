@@ -48,7 +48,8 @@ def get_sequence_names(config, schema="public"):
 
 
 def synchronize_sequences(config):
-    sequences = get_sequence_names(config, "public")
+    schema = "public"
+    sequences = get_sequence_names(config, schema)
     with source_db(config) as conn:
         with conn.cursor() as cur:
             for sequence in sequences:
